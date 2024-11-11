@@ -174,7 +174,7 @@ def main():
     populator = CeleryQueuePopulator()
     
     try:
-        populator.populate_queues(500000)
+        populator.populate_queues(50000)
         logger.info("Process completed successfully!")
         
     except Exception as e:
