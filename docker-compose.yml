@@ -1,0 +1,221 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"   # AMQP protocol
+      - "15672:15672" # Management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin123
+      - RABBITMQ_DEFAULT_VHOST=/
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - queue-network
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  redis:
+    image: redis:7.2
+    container_name: redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - queue-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  api:
+    build: .
+    container_name: api
+    command: python -m flask run --host=0.0.0.0
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./logs:/app/logs
+      - ./app:/app/app
+    environment:
+      - FLASK_APP=app.api.routes
+      - FLASK_ENV=development
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=admin123
+      - RABBITMQ_VHOST=/
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+    networks:
+      - queue-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  worker_manager:
+    build: .
+    container_name: worker_manager
+    command: python -m app.workers.worker_manager
+    volumes:
+      - ./logs:/app/logs
+      - ./app:/app/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=admin123
+      - RABBITMQ_VHOST=/
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MIN_WORKERS=1
+      - MAX_WORKERS=10
+      - SCALE_UP_THRESHOLD=1000
+      - SCALE_DOWN_THRESHOLD=100
+      - MESSAGES_PER_WORKER=200
+      - LOG_LEVEL=INFO
+    networks:
+      - queue-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  worker_scaler:
+    build: .
+    container_name: worker_scaler
+    command: python -m app.workers.worker_scaler
+    volumes:
+      - ./logs:/app/logs
+      - ./app:/app/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=admin123
+      - RABBITMQ_VHOST=/
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+      - DOCKER_NETWORK=queue-network
+      - WORKER_IMAGE=queue-manager-celery_worker_scaler
+      - MAX_MEMORY_PER_WORKER=512M
+      - MAX_CPU_PER_WORKER=0.5
+      - MIN_WORKERS=1
+      - MAX_WORKERS=10
+      - SCALE_UP_THRESHOLD=1000
+      - SCALE_DOWN_THRESHOLD=100
+      - MESSAGES_PER_WORKER=200
+      - HEALTHCHECK_INTERVAL=10
+      - CPU_THRESHOLD=80.0
+    networks:
+      - queue-network
+    depends_on:
+      - worker_manager
+    privileged: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+          
+  flower:
+    build: .
+    container_name: flower
+    command: celery -A app.core.celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./logs:/app/logs
+      - ./app:/app/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=admin123
+      - RABBITMQ_VHOST=/
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+      - FLOWER_USER=admin
+      - FLOWER_PASSWORD=admin123
+    networks:
+      - queue-network
+    depends_on:
+      - worker_manager
+      - worker_scaler
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+networks:
+  queue-network:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
+  redis_data:
