@@ -1,3 +1,4 @@
+```mermaid
 flowchart TB
     subgraph External ["Sistema Externo"]
         API["API de Controle\nde Vazão"]
@@ -39,3 +40,4 @@ flowchart TB
     Prometheus -->|"Monitora"| CeleryWorkers
     
     WorkerManager -->|"Monitora"| RMQ
+```    
